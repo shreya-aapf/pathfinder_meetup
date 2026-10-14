@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Invoice xmlns="urn:example:einvoice:1.0">
+  <ID>BHS-2026-0912</ID>
+  <IssueDate>2026-10-07</IssueDate>
+  <DueDate>2026-11-06</DueDate>
+  <OrderReference><ID>PO-0004117</ID></OrderReference>
+  <AccountingSupplierParty>
+    <PartyName>Blue Heron Security Services</PartyName>
+    <PostalAddress>78 Bay Terrace, San Francisco, CA 94124, USA</PostalAddress>
+    <PartyTaxScheme><CompanyID>EIN 94-0000117</CompanyID></PartyTaxScheme>
+    <Contact><Email>billing@blueheron-sec.example</Email><Telephone>+1 415 555 0117</Telephone></Contact>
+  </AccountingSupplierParty>
+  <AccountingCustomerParty>
+    <PartyName>Northstar Developer Community Inc.</PartyName>
+    <PostalAddress>500 Market Street, Floor 12, San Francisco, CA 94105, USA, EIN 00-0000001</PostalAddress>
+  </AccountingCustomerParty>
+  <Delivery>
+    <DeliveryLocation><Name>Northstar SF Summit Hall</Name><Address>88 Mission Row, San Francisco, CA 94105, USA</Address></DeliveryLocation>
+    <ReceivedBy>Tomas Rivera</ReceivedBy>
+  </Delivery>
+  <TaxTotal><TaxScheme>Sales Tax</TaxScheme><Percent>0</Percent><TaxAmount>0.00</TaxAmount></TaxTotal>
+  <LegalMonetaryTotal><LineExtensionAmount>6072.00</LineExtensionAmount><TaxExclusiveAmount>6072.00</TaxExclusiveAmount><PayableAmount>6072.00</PayableAmount></LegalMonetaryTotal>
+  <InvoiceLine>
+    <ID>1</ID>
+    <Description>Unarmed security guard, per hour</Description>
+    <InvoicedQuantity unitCode="HR">100</InvoicedQuantity>
+    <PriceAmount>42.00</PriceAmount>
+    <LineExtensionAmount>4200.00</LineExtensionAmount>
+  </InvoiceLine>
+  <InvoiceLine>
+    <ID>2</ID>
+    <Description>Security supervisor, per hour</Description>
+    <InvoicedQuantity unitCode="HR">24</InvoicedQuantity>
+    <PriceAmount>58.00</PriceAmount>
+    <LineExtensionAmount>1392.00</LineExtensionAmount>
+  </InvoiceLine>
+  <InvoiceLine>
+    <ID>3</ID>
+    <Description>Crowd barrier rental</Description>
+    <InvoicedQuantity unitCode="EA">40</InvoicedQuantity>
+    <PriceAmount>12.00</PriceAmount>
+    <LineExtensionAmount>480.00</LineExtensionAmount>
+  </InvoiceLine>
+</Invoice>

@@ -1,0 +1,65 @@
+{
+  "invoice": {
+    "number": "BW-2026-04581",
+    "issue_date": "2026-10-04",
+    "due_date": "2026-11-03",
+    "purchase_order": "PO-0004121",
+    "supplier": {
+      "name": "Brightwave AV Rentals",
+      "address": "2148 Harbor Loop, Suite 5, Austin, TX 78702, USA",
+      "tax_id": "EIN 74-0000101",
+      "email": "billing@brightwave-av.example",
+      "phone": "+1 512 555 0101"
+    },
+    "customer": {
+      "name": "Northstar Developer Community Inc.",
+      "address": "500 Market Street, Floor 12, San Francisco, CA 94105, USA, EIN 00-0000001"
+    },
+    "delivery": {
+      "location": "Northstar Austin Event Space",
+      "address": "410 Lamar Yard, Austin, TX 78704, USA",
+      "received_by": "Dana Whitfield"
+    },
+    "lines": [
+      {
+        "line": 1,
+        "description": "Wireless handheld mic",
+        "quantity": 6,
+        "uom": "EA",
+        "unit_price": 60.0,
+        "amount": 360.0
+      },
+      {
+        "line": 2,
+        "description": "Stage monitor wedge",
+        "quantity": 6,
+        "uom": "EA",
+        "unit_price": 125.0,
+        "amount": 750.0
+      },
+      {
+        "line": 3,
+        "description": "7000 lumen projector, 2-day rental",
+        "quantity": 2,
+        "uom": "EA",
+        "unit_price": 520.0,
+        "amount": 1040.0
+      },
+      {
+        "line": 4,
+        "description": "HDMI/SDI cable kit",
+        "quantity": 3,
+        "uom": "EA",
+        "unit_price": 45.0,
+        "amount": 135.0
+      }
+    ],
+    "totals": {
+      "subtotal": 2285.0,
+      "tax_rate_pct": 8.25,
+      "tax_label": "Sales Tax",
+      "tax": 188.51,
+      "total_due": 2473.51
+    }
+  }
+}
