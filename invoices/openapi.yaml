@@ -1,0 +1,2320 @@
+openapi: 3.0.3
+info:
+  title: Hard Close mock systems API
+  version: 1.0.0
+  description: |
+    Mock finance systems for the Pathfinder Summit "Hard Close" challenge: ClearLedger (invoice review),
+    ProcureOS (purchase orders), ReceiptsLog (goods received), MeridianGL (general ledger), AuditTrail
+    (fraud flags, close status), Vendors, Mailbox, the board Dashboard and an Admin service.
+    All systems are Supabase Edge Functions; the first path segment is the function name.
+
+    Authentication: a personal API key (`X-API-Key`) or a sign-in token (`Authorization: Bearer`).
+    MeridianGL also accepts the shared key `demo-key-meridiangl`. Mailbox and key management need a
+    sign-in token. Full details and examples are in API_REFERENCE.md.
+
+    Every error is JSON: `{ "error": "<message>" }`.
+servers:
+  - url: https://jmbwyttobedzszswarhd.supabase.co/functions/v1
+    description: Hosted project
+tags:
+  - name: Auth
+  - name: ClearLedger
+  - name: ProcureOS
+  - name: ReceiptsLog
+  - name: MeridianGL
+  - name: AuditTrail
+  - name: Vendors
+  - name: Mailbox
+  - name: Dashboard
+  - name: Admin
+security:
+  - ApiKey: []
+  - BearerAuth: []
+
+paths:
+  # ---------------------------------------------------------------- Auth
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Create an account
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string, minLength: 3, maxLength: 32, description: 'Letters, numbers, dot, dash, underscore; not case-sensitive' }
+                password: { type: string, minLength: 8, description: 'Maximum 72 bytes' }
+                confirm_password: { type: string, description: Optional; must match password when sent }
+      responses:
+        '201':
+          description: Account created
+          content:
+            application/json:
+              schema: { type: object, properties: { ok: { type: boolean } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Sign in and get a 7-day token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string }
+      responses:
+        '200':
+          description: Signed in
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Session' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429':
+          description: Five wrong passwords in a row lock the account for five minutes
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Renew the sign-in token for another 7 days
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: New token
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Session' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Username, default API key and difficulty mode
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Profile
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  username: { type: string }
+                  api_key: { type: string, example: pf-AbC123xyz }
+                  mode: { $ref: '#/components/schemas/Mode' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /auth/mode:
+    post:
+      tags: [Auth]
+      summary: Choose the difficulty mode
+      description: Choosing `hard` assigns three random incoming invoices by an email titled "Close assignment". The same three are kept when the mode is set again.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mode]
+              properties:
+                mode: { $ref: '#/components/schemas/Mode' }
+      responses:
+        '200':
+          description: Mode saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mode: { $ref: '#/components/schemas/Mode' }
+                  assigned_invoices:
+                    type: array
+                    description: File names of the assigned invoices (empty unless mode is hard)
+                    items: { type: string }
+                    example: [BW_BW-2026-04581.json, IMG_4821.png, TWS_TWS-11044.pdf]
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/ServerError' }
+  /auth/key/rotate:
+    post:
+      tags: [Auth]
+      summary: Replace the value of the default API key
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: New key; the old value stops working at once
+          content:
+            application/json:
+              schema: { type: object, properties: { api_key: { type: string } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /auth/keys:
+    get:
+      tags: [Auth]
+      summary: List your named API keys, newest first
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Keys
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  keys:
+                    type: array
+                    items: { $ref: '#/components/schemas/ApiKey' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Auth]
+      summary: Create a named API key (up to 20 per account)
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 60 }
+                expires_in_days: { type: integer, minimum: 1, maximum: 3650, nullable: true }
+                expires_at: { type: string, format: date-time, description: 'Future timestamp, at most 10 years ahead; use instead of expires_in_days' }
+      responses:
+        '201':
+          description: Key created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiKey' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /auth/keys/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [Auth]
+      summary: Rename a key or change its expiry
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 60 }
+                expires_in_days: { type: integer, minimum: 1, maximum: 3650, nullable: true }
+                expires_at: { type: string, format: date-time, nullable: true, description: 'null means never expires' }
+      responses:
+        '200':
+          description: Updated key
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiKey' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Auth]
+      summary: Revoke a key
+      security:
+        - BearerAuth: []
+      responses:
+        '204': { description: Revoked }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /auth/reset-my-work:
+    post:
+      tags: [Auth]
+      summary: Restore the original scenario
+      description: Deletes your invoices, POs, receipts, close-status changes, audit entries, documents, mailbox, hard-mode assignments and dashboard reports, then restores the starting data. Login and API key are kept.
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Reset done
+          content:
+            application/json:
+              schema: { type: object, properties: { ok: { type: boolean } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  # ---------------------------------------------------------------- ClearLedger
+  /clearledger/api/invoices:
+    post:
+      tags: [ClearLedger]
+      summary: Submit an extracted invoice with its mismatch analysis
+      description: Fires an `invoice.created` webhook. An unknown `vendor_id` adds a vendor visible only to you.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InvoiceInput' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invoice_number: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    get:
+      tags: [ClearLedger]
+      summary: List your invoices with full details, newest first
+      description: Each invoice includes line_items, actions, vendor_flag and threshold_pct, as in the single-invoice endpoint. Filters combine with AND; ranges are inclusive.
+      parameters:
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/InvoiceStatus' } }
+        - { name: vendor_id, in: query, schema: { type: string } }
+        - { name: po_number, in: query, schema: { type: string } }
+        - { name: invoice_number, in: query, description: Exact match; still returns an array, empty when nothing matches, schema: { type: string } }
+        - { name: date_from, in: query, description: invoice_date on or after this day, schema: { type: string, format: date } }
+        - { name: date_to, in: query, description: invoice_date on or before this day, schema: { type: string, format: date } }
+        - { name: min_amount, in: query, description: total_amount at least this value, schema: { type: number } }
+        - { name: max_amount, in: query, description: total_amount at most this value, schema: { type: number } }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        '200':
+          description: Invoices with their line items, actions and vendor flag
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  allOf:
+                    - { $ref: '#/components/schemas/Invoice' }
+                    - type: object
+                      properties:
+                        line_items: { type: array, items: { $ref: '#/components/schemas/InvoiceLine' } }
+                        actions: { type: array, items: { type: object } }
+                        vendor_flag: { type: object, nullable: true }
+                        threshold_pct: { type: number }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    patch:
+      tags: [ClearLedger]
+      summary: Change an invoice or record a decision, addressed by invoice number
+      description: |
+        One endpoint for every change. Send only the fields that change. To rename, put the current number in the
+        query and the new number in the body. `action` records a decision (`approve`, `contact_vendor`, `escalate`)
+        and can travel together with corrections. Fires `invoice.updated`. In hard mode, `approve` and `escalate`
+        also fire `invoice.closed`.
+      parameters:
+        - $ref: '#/components/parameters/InvoiceNumber'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InvoicePatch' }
+      responses:
+        '200':
+          description: Updated invoice with its line items
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Invoice'
+                  - type: object
+                    properties:
+                      line_items:
+                        type: array
+                        items: { $ref: '#/components/schemas/InvoiceLine' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /clearledger/api/invoices/upload:
+    post:
+      tags: [ClearLedger]
+      summary: Create an invoice from its header details and line items (no file)
+      description: Takes a JSON body, or form fields with no file parts (send line_items as a JSON string). Attach the invoice file afterwards with `POST /clearledger/api/invoice/document`. Fires `invoice.created`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [invoice_number, vendor_name, po_number, total_amount]
+              properties:
+                invoice_number: { type: string }
+                vendor_id: { type: string, description: 'Optional. When omitted, the id of the vendor with the same vendor_name is used, otherwise an id such as AUTO-1A2B3C4D derived from the name' }
+                vendor_name: { type: string }
+                po_number: { type: string }
+                total_amount: { oneOf: [{ type: number }, { type: string, example: '₹16,500.00' }], description: A number or text; the number is read out of it }
+                invoice_date: { type: string, description: 'YYYY-MM-DD, DD/MM/YYYY, Mar 15, 2024 or an ISO timestamp; stored as YYYY-MM-DD' }
+                gr_number: { type: string }
+                currency: { type: string, minLength: 3, maxLength: 3, default: USD }
+                vendor_email: { type: string, format: email }
+                match_status: { type: string, enum: [match, mismatch, partial_match] }
+                variance_amount: { oneOf: [{ type: number }, { type: string }], default: 0 }
+                variance_pct: { oneOf: [{ type: number }, { type: string }], default: 0 }
+                line_items:
+                  type: array
+                  description: Same format as POST /clearledger/api/invoices (API field names or invoice-table columns)
+                  items: { $ref: '#/components/schemas/InvoiceLine' }
+      responses:
+        '201':
+          description: The new invoice, with its line_items
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: '#/components/schemas/Invoice' }
+                  - type: object
+                    properties:
+                      line_items: { type: array, items: { $ref: '#/components/schemas/InvoiceLine' } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/ServerError' }
+  /clearledger/api/invoice:
+    get:
+      tags: [ClearLedger]
+      summary: Get one invoice by number
+      parameters:
+        - $ref: '#/components/parameters/InvoiceNumber'
+      responses:
+        '200': { $ref: '#/components/responses/InvoiceDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /clearledger/api/invoice/document:
+    post:
+      tags: [ClearLedger]
+      summary: Attach or replace an invoice file, by invoice number
+      description: Fires `invoice.updated`. In hard mode the uploaded file name is matched against the assigned file names.
+      parameters:
+        - $ref: '#/components/parameters/InvoiceNumber'
+      requestBody:
+        $ref: '#/components/requestBodies/InvoiceFile'
+      responses:
+        '201': { $ref: '#/components/responses/InvoiceFileStored' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    get:
+      tags: [ClearLedger]
+      summary: Signed link to the invoice file, by invoice number
+      parameters:
+        - $ref: '#/components/parameters/InvoiceNumber'
+      responses:
+        '200': { $ref: '#/components/responses/SignedLink' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /clearledger/api/invoice/document/download:
+    get:
+      tags: [ClearLedger]
+      summary: Download the invoice file, by invoice number
+      parameters:
+        - $ref: '#/components/parameters/InvoiceNumber'
+      responses:
+        '200': { $ref: '#/components/responses/FileBytes' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /clearledger/api/settings/threshold:
+    get:
+      tags: [ClearLedger]
+      summary: Read your variance tolerance percentage
+      responses:
+        '200':
+          description: Threshold
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Threshold' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    put:
+      tags: [ClearLedger]
+      summary: Set your variance tolerance percentage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [threshold_pct]
+              properties:
+                threshold_pct: { type: number, minimum: 0, maximum: 100 }
+      responses:
+        '200':
+          description: Threshold saved
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Threshold' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # ---------------------------------------------------------------- ProcureOS
+  /procureos/api/po/{po_number}:
+    get:
+      tags: [ProcureOS]
+      summary: Get a purchase order with its lines (primary automation endpoint)
+      parameters:
+        - $ref: '#/components/parameters/PoNumber'
+      responses:
+        '200':
+          description: The purchase order
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PurchaseOrder' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /procureos/api/pos:
+    get:
+      tags: [ProcureOS]
+      summary: List purchase orders, newest first
+      parameters:
+        - { name: vendor_id, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/PoStatus' } }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        '200':
+          description: Stored PO rows without line items
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  page: { type: integer }
+                  limit: { type: integer }
+                  count: { type: integer }
+                  purchase_orders:
+                    type: array
+                    items: { type: object, additionalProperties: true }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [ProcureOS]
+      summary: Create a purchase order
+      description: |
+        `line_items[].amount` and `total_amount` are computed on the server. The seven justification answers are
+        required; send them flat (as below) or nested under `justification`. An unknown `vendor_id` adds a vendor
+        visible only to you, using any `vendor_*` fields sent. `requester_email` adds a private mailbox contact.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PoInput' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PurchaseOrder' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /procureos/api/pos/{po_number}:
+    parameters:
+      - $ref: '#/components/parameters/PoNumber'
+    put:
+      tags: [ProcureOS]
+      summary: Update a purchase order
+      description: Omitted header fields keep their value. `line_items` replaces all lines and the total is recalculated; omitting it removes all lines.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PoInput' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PurchaseOrder' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [ProcureOS]
+      summary: Delete a purchase order, its lines and its file
+      responses:
+        '204': { description: Deleted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /procureos/api/pos/{po_number}/document:
+    parameters:
+      - $ref: '#/components/parameters/PoNumber'
+    post:
+      tags: [ProcureOS]
+      summary: Attach or replace a supporting file
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary, description: 'pdf, png, jpg, jpeg, tif, tiff, doc, docx, xls or xlsx, up to 10 MB' }
+      responses:
+        '201':
+          description: Stored
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  po_number: { type: string }
+                  document_name: { type: string }
+                  document_path: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    get:
+      tags: [ProcureOS]
+      summary: Signed link to the supporting file
+      responses:
+        '200': { $ref: '#/components/responses/SignedLink' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /procureos/api/pos/{po_number}/document/download:
+    get:
+      tags: [ProcureOS]
+      summary: Download the supporting file
+      parameters:
+        - $ref: '#/components/parameters/PoNumber'
+      responses:
+        '200': { $ref: '#/components/responses/FileBytes' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ---------------------------------------------------------------- ReceiptsLog
+  /receiptslog/api/gr/by-po/{po_number}:
+    get:
+      tags: [ReceiptsLog]
+      summary: Every receipt for a PO, oldest first (primary automation endpoint)
+      parameters:
+        - $ref: '#/components/parameters/PoNumber'
+      responses:
+        '200':
+          description: Receipts; empty array when the PO has none
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/GoodsReceipt' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /receiptslog/api/gr/{gr_number}:
+    get:
+      tags: [ReceiptsLog]
+      summary: Get one receipt
+      parameters:
+        - $ref: '#/components/parameters/GrNumber'
+      responses:
+        '200':
+          description: The receipt
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GoodsReceipt' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /receiptslog/api/grs:
+    get:
+      tags: [ReceiptsLog]
+      summary: List receipts
+      parameters:
+        - { name: po_number, in: query, schema: { type: string } }
+        - { name: vendor_id, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/GrStatus' } }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        '200':
+          description: Receipts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/GoodsReceipt' }
+                  page: { type: integer }
+                  limit: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [ReceiptsLog]
+      summary: Create a receipt
+      description: Fires a `goods_receipt.created` webhook.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GoodsReceiptInput' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GoodsReceipt' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /receiptslog/api/grs/{gr_number}:
+    parameters:
+      - $ref: '#/components/parameters/GrNumber'
+    put:
+      tags: [ReceiptsLog]
+      summary: Update a receipt
+      description: Send any header field. `line_items`, when present, replaces all lines. Fires `goods_receipt.updated`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GoodsReceiptInput' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GoodsReceipt' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [ReceiptsLog]
+      summary: Delete a receipt (no webhook)
+      responses:
+        '204': { description: Deleted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /receiptslog/api/grs/{gr_number}/document:
+    parameters:
+      - $ref: '#/components/parameters/GrNumber'
+    post:
+      tags: [ReceiptsLog]
+      summary: Attach or replace a receipt file
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '201':
+          description: Stored
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    get:
+      tags: [ReceiptsLog]
+      summary: Signed link to the receipt file
+      responses:
+        '200': { $ref: '#/components/responses/SignedLink' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /receiptslog/api/grs/{gr_number}/document/download:
+    get:
+      tags: [ReceiptsLog]
+      summary: Download the receipt file
+      parameters:
+        - $ref: '#/components/parameters/GrNumber'
+      responses:
+        '200': { $ref: '#/components/responses/FileBytes' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ---------------------------------------------------------------- MeridianGL
+  /meridiangl/api/gl/accounts:
+    get:
+      tags: [MeridianGL]
+      summary: GL accounts
+      security:
+        - GlKey: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Subsidiary'
+      responses:
+        '200':
+          description: Accounts
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/GlAccount' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /meridiangl/api/gl/balances:
+    get:
+      tags: [MeridianGL]
+      summary: GL and subledger balances joined with their account
+      security:
+        - GlKey: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Subsidiary'
+        - { name: period, in: query, description: 'For example 2024-11', schema: { type: string } }
+      responses:
+        '200':
+          description: Balances
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/GlBalance' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /meridiangl/api/gl/intercompany:
+    get:
+      tags: [MeridianGL]
+      summary: Intercompany transactions, newest posting first
+      security:
+        - GlKey: []
+        - BearerAuth: []
+      parameters:
+        - { name: subsidiary, in: query, description: Matches either side of the transaction, schema: { $ref: '#/components/schemas/Subsidiary' } }
+        - { name: flag_type, in: query, schema: { type: string, enum: [matched, timing_difference, error] } }
+      responses:
+        '200':
+          description: Transactions
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/IntercompanyTransaction' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /meridiangl/api/gl/accruals:
+    get:
+      tags: [MeridianGL]
+      summary: Accruals
+      security:
+        - GlKey: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Subsidiary'
+        - { name: status, in: query, schema: { type: string, enum: [within_tolerance, flagged, blocked] } }
+        - { name: period, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Accruals
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Accrual' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /meridiangl/api/gl/balance-sheet:
+    get:
+      tags: [MeridianGL]
+      summary: Each account with its latest-period balance
+      security:
+        - GlKey: []
+        - BearerAuth: []
+      parameters:
+        - { name: subsidiary, in: query, description: 'A, B or C; anything else means all', schema: { type: string } }
+      responses:
+        '200':
+          description: Balance sheet rows
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subsidiary: { type: string, example: A }
+                  rows:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        account: { $ref: '#/components/schemas/GlAccount' }
+                        balance:
+                          nullable: true
+                          allOf:
+                            - $ref: '#/components/schemas/GlBalance'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # ---------------------------------------------------------------- AuditTrail
+  /audittrail/api/vendor-flags:
+    get:
+      tags: [AuditTrail]
+      summary: Vendor fraud flags, newest first
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [open, cleared, escalated] } }
+      responses:
+        '200':
+          description: Flags
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/VendorFlag' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /audittrail/api/vendor-flags/{id}:
+    get:
+      tags: [AuditTrail]
+      summary: Get one vendor flag
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The flag
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VendorFlag' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /audittrail/api/flux-analysis:
+    get:
+      tags: [AuditTrail]
+      summary: Flux analysis rows
+      parameters:
+        - { name: category, in: query, schema: { type: string, enum: [revenue, opex, cash] } }
+        - { name: status, in: query, schema: { type: string, enum: [explained, unexplained] } }
+      responses:
+        '200':
+          description: Flux rows
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/FluxRow' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /audittrail/api/audit-trail:
+    get:
+      tags: [AuditTrail]
+      summary: Your audit entries, newest first
+      parameters:
+        - { name: related_reference, in: query, description: For example an invoice number, schema: { type: string } }
+      responses:
+        '200':
+          description: Entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AuditEntry' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [AuditTrail]
+      summary: Log a check and its decision (append-only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action_checked, decision]
+              properties:
+                agent_name: { type: string, default: close-automation }
+                action_checked: { type: string }
+                decision: { type: string }
+                evidence: { type: string }
+                escalation_reason: { type: string }
+                related_reference: { type: string }
+      responses:
+        '201':
+          description: Stored entry
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuditEntry' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /audittrail/api/close-status:
+    get:
+      tags: [AuditTrail]
+      summary: Your close-status board, most recently updated first
+      parameters:
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/CloseState' } }
+        - { name: category, in: query, schema: { type: string, enum: [Vendor Flag, GL Variance, Intercompany, Accrual, Flux] } }
+      responses:
+        '200':
+          description: Items
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/CloseItem' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /audittrail/api/close-status/{id}:
+    patch:
+      tags: [AuditTrail]
+      summary: Update a close-status item
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                status: { $ref: '#/components/schemas/CloseState' }
+                owner: { type: string }
+                note: { type: string }
+      responses:
+        '200':
+          description: Updated item
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CloseItem' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ---------------------------------------------------------------- Vendors
+  /vendors/api/vendors:
+    get:
+      tags: [Vendors]
+      summary: List shared vendors plus the vendors created from your own invoices and POs
+      parameters:
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/VendorStatus' } }
+        - { name: q, in: query, description: 'Matches name, id or email', schema: { type: string } }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        '200':
+          description: Vendors ordered by vendor_id
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  page: { type: integer }
+                  limit: { type: integer }
+                  count: { type: integer }
+                  vendors:
+                    type: array
+                    items: { $ref: '#/components/schemas/Vendor' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Vendors]
+      summary: Create a shared vendor (test key or admin credential)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VendorInput' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Vendor' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /vendors/api/vendors/search:
+    get:
+      tags: [Vendors]
+      summary: Find a vendor by PO number, vendor name, or both
+      description: At least one query parameter is required; with both, the vendor must match both. `po_number` is an exact match (ignoring case) against your own POs and invoices; `vendor_name` is a case-insensitive contains match.
+      parameters:
+        - { name: po_number, in: query, schema: { type: string }, example: PO-0004101 }
+        - { name: vendor_name, in: query, schema: { type: string }, example: Acme }
+      responses:
+        '200':
+          description: Matching vendors. `purchase_orders` is present only when po_number was sent.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count: { type: integer }
+                  vendors:
+                    type: array
+                    items:
+                      allOf:
+                        - { $ref: '#/components/schemas/Vendor' }
+                        - type: object
+                          properties:
+                            purchase_orders: { type: array, items: { type: object } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /vendors/api/vendors/{vendor_id}:
+    parameters:
+      - { name: vendor_id, in: path, required: true, schema: { type: string }, example: VEND-001 }
+    get:
+      tags: [Vendors]
+      summary: One vendor with your invoices and purchase orders for it
+      responses:
+        '200':
+          description: Vendor detail
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Vendor'
+                  - type: object
+                    properties:
+                      invoice_count: { type: integer }
+                      purchase_order_count: { type: integer }
+                      invoices: { type: array, items: { type: object, additionalProperties: true } }
+                      purchase_orders: { type: array, items: { type: object, additionalProperties: true } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Vendors]
+      summary: Update a shared vendor (test key or admin credential)
+      description: Send only the fields that change; `null` clears an optional field. `vendor_id` cannot be changed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VendorInput' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Vendor' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Vendors]
+      summary: Delete a shared vendor (test key or admin credential)
+      responses:
+        '204': { description: Deleted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ---------------------------------------------------------------- Mailbox
+  /mailbox/contacts:
+    get:
+      tags: [Mailbox]
+      summary: Shared contacts plus the contacts from your own invoices and POs
+      security:
+        - BearerAuth: []
+        - ApiKey: []
+      responses:
+        '200':
+          description: Contacts ordered by name
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Contact' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Mailbox]
+      summary: Add a shared contact (test key or admin credential)
+      security:
+        - BearerAuth: []
+        - ApiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, name]
+              properties:
+                email: { type: string, format: email }
+                name: { type: string }
+                role: { type: string, default: Vendor }
+                reply: { $ref: '#/components/schemas/ScriptedReply' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Contact' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    patch:
+      tags: [Mailbox]
+      summary: Update a shared contact, addressed by email query parameter
+      security:
+        - BearerAuth: []
+        - ApiKey: []
+      parameters:
+        - { name: email, in: query, required: true, schema: { type: string, format: email } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                role: { type: string }
+                reply: { $ref: '#/components/schemas/ScriptedReply' }
+      responses:
+        '200':
+          description: Updated contact
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Contact' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /mailbox/send:
+    post:
+      tags: [Mailbox]
+      summary: Send an email to a contact; a scripted reply arrives about 60 seconds later
+      description: |
+        Two request shapes. With the `to` and `subject` headers, the whole request body is the email
+        text (any content type, no escaping needed); this is the safer choice for long or formatted
+        text. Without them, send a JSON object with `to`, `subject` and `body`. If the `to` header is
+        present the request is read as the header form.
+
+        `to` accepts up to 10 recipients, separated by commas (no brackets), or a JSON array in the
+        JSON form. All recipients must be known contacts, otherwise nothing is sent. Each recipient
+        gets its own sent email and scripted reply. One recipient returns a single object; several
+        (or an array) return an array of objects.
+      security:
+        - BearerAuth: []
+        - ApiKey: []
+      parameters:
+        - name: to
+          in: header
+          description: 'Recipient address, or up to 10 comma-separated addresses (header form only)'
+          schema: { type: string, format: email }
+        - name: subject
+          in: header
+          description: Subject, up to 200 characters (header form only). Percent-encode non-ASCII characters.
+          schema: { type: string, maxLength: 200 }
+      requestBody:
+        required: true
+        content:
+          text/plain:
+            schema:
+              type: string
+              maxLength: 10000
+              description: The email body (header form)
+          application/json:
+            schema:
+              type: object
+              required: [to, subject, body]
+              properties:
+                to:
+                  description: One address, a comma-separated list, or an array of up to 10 addresses
+                  oneOf:
+                    - { type: string }
+                    - { type: array, maxItems: 10, items: { type: string, format: email } }
+                subject: { type: string, maxLength: 200 }
+                body: { type: string, maxLength: 10000 }
+      responses:
+        '201':
+          description: The sent email and when the reply is due; an array of these for several recipients
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/SentEmail'
+                  - type: array
+                    items: { $ref: '#/components/schemas/SentEmail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /mailbox/inbox:
+    get:
+      tags: [Mailbox]
+      summary: Delivered emails, newest first, up to 200
+      description: Also releases replies that are due. In hard mode the "Close assignment" email is here.
+      security:
+        - BearerAuth: []
+        - ApiKey: []
+      parameters:
+        - { name: unread, in: query, schema: { type: boolean } }
+      responses:
+        '200':
+          description: Emails; an empty array means nothing is due yet
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Email' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /mailbox/sent:
+    get:
+      tags: [Mailbox]
+      summary: Sent emails, newest first, up to 200
+      security:
+        - BearerAuth: []
+        - ApiKey: []
+      responses:
+        '200':
+          description: Emails
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Email' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /mailbox/emails/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [Mailbox]
+      summary: Get one email
+      security:
+        - BearerAuth: []
+        - ApiKey: []
+      responses:
+        '200':
+          description: The email
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Email' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Mailbox]
+      summary: Mark an email read or unread
+      security:
+        - BearerAuth: []
+        - ApiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [is_read]
+              properties:
+                is_read: { type: boolean }
+      responses:
+        '200':
+          description: Updated email
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Email' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ---------------------------------------------------------------- Dashboard
+  /dashboard/api/summary:
+    get:
+      tags: [Dashboard]
+      summary: Board figures for the CFO dashboard
+      description: Combines the shared GL data (balance sheet trend, subsidiaries, intercompany, accruals, flux, vendor flags) with your own invoices, close status and hard-mode assignments. Invoice amounts are per currency and never converted.
+      responses:
+        '200':
+          description: Summary
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DashboardSummary' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /dashboard/api/webhook:
+    post:
+      tags: [Dashboard]
+      summary: Receiver for the assignments.completed webhook
+      description: |
+        Called by the server when all three hard-mode invoices are closed. Creates one pending report for
+        `data.owner_id`; a second call while one is pending creates nothing. The signature is
+        `sha256=<hex HMAC-SHA256 of the raw body>` using `WEBHOOK_SECRET` (or the service role key when unset).
+      security:
+        - WebhookSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [event, data]
+              properties:
+                event: { type: string, enum: [assignments.completed] }
+                data:
+                  type: object
+                  required: [owner_id]
+                  properties:
+                    owner_id: { type: string, format: uuid }
+      responses:
+        '201':
+          description: Report created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportCreated' }
+        '200':
+          description: A report was already pending
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportCreated' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /dashboard/api/reports/pending:
+    get:
+      tags: [Dashboard]
+      summary: Your report waiting to be downloaded
+      responses:
+        '200':
+          description: The oldest pending report, or null
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pending:
+                    nullable: true
+                    allOf:
+                      - $ref: '#/components/schemas/Report'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /dashboard/api/reports:
+    get:
+      tags: [Dashboard]
+      summary: Your reports, newest first (up to 50)
+      responses:
+        '200':
+          description: Reports
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Report' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /dashboard/api/reports/{id}/downloaded:
+    post:
+      tags: [Dashboard]
+      summary: Mark a report as downloaded
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Marked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  status: { type: string, enum: [downloaded] }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ---------------------------------------------------------------- Admin
+  /admin/register-user:
+    post:
+      tags: [Admin]
+      summary: Create and provision an account
+      security:
+        - AdminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  username: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /admin/users:
+    get:
+      tags: [Admin]
+      summary: All accounts, most recent sign-in first
+      security:
+        - AdminKey: []
+      responses:
+        '200':
+          description: Accounts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: { type: string, format: uuid }
+                    username: { type: string }
+                    created_at: { type: string, format: date-time }
+                    last_login_at: { type: string, format: date-time, nullable: true }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /admin/delete-user:
+    post:
+      tags: [Admin]
+      summary: Delete one account and all its data
+      security:
+        - AdminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId]
+              properties:
+                userId: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema: { type: object, properties: { deleted: { type: string, format: uuid } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /admin/bulk-delete-users:
+    post:
+      tags: [Admin]
+      summary: Delete several accounts; one failure does not stop the rest
+      security:
+        - AdminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userIds]
+              properties:
+                userIds:
+                  type: array
+                  minItems: 1
+                  items: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Per-user results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  requested: { type: integer }
+                  successCount: { type: integer }
+                  errorCount: { type: integer }
+                  results: { type: array, items: { type: object, additionalProperties: true } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /admin/clear-all-users:
+    post:
+      tags: [Admin]
+      summary: Delete every account except the protected test accounts (Test01 to Test10)
+      security:
+        - AdminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirm]
+              properties:
+                confirm: { type: boolean, enum: [true] }
+      responses:
+        '200':
+          description: Counts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deletedUsers: { type: integer }
+                  failed: { type: array, items: { type: object, additionalProperties: true } }
+                  preservedTestUsers: { type: integer }
+                  before: { type: integer }
+                  after: { type: integer }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /admin/reset-test-users:
+    post:
+      tags: [Admin]
+      summary: Rebuild the work queue of every protected test account
+      security:
+        - AdminKey: []
+      responses:
+        '200':
+          description: Per-account results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  requested: { type: integer }
+                  successCount: { type: integer }
+                  results: { type: array, items: { type: object, additionalProperties: true } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /admin/progress:
+    get:
+      tags: [Admin]
+      summary: Invoice and close-status progress of each protected test account
+      security:
+        - AdminKey: []
+      responses:
+        '200':
+          description: Progress
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accounts:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        username: { type: string }
+                        invoices: { type: object, additionalProperties: { type: integer } }
+                        close_status: { type: object, additionalProperties: { type: integer } }
+                        work_remaining: { type: boolean }
+                  accountsWithWorkRemaining: { type: integer }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+x-webhooks:
+  invoice.created:
+    post:
+      summary: An invoice was created (POST /clearledger/api/invoices or /upload)
+      requestBody:
+        $ref: '#/components/requestBodies/InvoiceWebhook'
+      responses:
+        '200': { description: Receiver acknowledges }
+  invoice.updated:
+    post:
+      summary: An invoice was changed, decided on, or had its file replaced
+      requestBody:
+        $ref: '#/components/requestBodies/InvoiceWebhook'
+      responses:
+        '200': { description: Receiver acknowledges }
+  invoice.closed:
+    post:
+      summary: Hard mode only. An invoice was approved or escalated
+      requestBody:
+        $ref: '#/components/requestBodies/InvoiceWebhook'
+      responses:
+        '200': { description: Receiver acknowledges }
+  goods_receipt.created:
+    post:
+      summary: A receipt was created
+      requestBody:
+        $ref: '#/components/requestBodies/GoodsReceiptWebhook'
+      responses:
+        '200': { description: Receiver acknowledges }
+  goods_receipt.updated:
+    post:
+      summary: A receipt was updated
+      requestBody:
+        $ref: '#/components/requestBodies/GoodsReceiptWebhook'
+      responses:
+        '200': { description: Receiver acknowledges }
+  email.received:
+    post:
+      summary: A vendor reply reached a user's inbox
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/WebhookEnvelope'
+                - type: object
+                  properties:
+                    data: { $ref: '#/components/schemas/Email' }
+      responses:
+        '200': { description: Receiver acknowledges }
+
+components:
+  securitySchemes:
+    ApiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: 'Personal API key (`pf-...`) or the shared test key. Also accepted as `Authorization: Bearer <key>`.'
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: Sign-in token from POST /auth/login (7 days).
+    GlKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Shared MeridianGL key `demo-key-meridiangl`.
+    AdminKey:
+      type: http
+      scheme: bearer
+      description: Admin credential (the service role key or the PRIVATE_API_KEY secret). Never use from the web UI.
+    WebhookSignature:
+      type: apiKey
+      in: header
+      name: X-Webhook-Signature
+      description: '`sha256=<hex HMAC-SHA256 of the raw body>`'
+
+  parameters:
+    Page: { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+    Limit: { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+    Subsidiary: { name: subsidiary, in: query, schema: { $ref: '#/components/schemas/Subsidiary' } }
+    InvoiceNumber:
+      name: invoice_number
+      in: query
+      required: true
+      description: Invoice number, URL-encoded. Numbers can contain slashes, so it is never put in the path.
+      schema: { type: string }
+      example: SSC/26-27/0388
+    PoNumber:
+      name: po_number
+      in: path
+      required: true
+      schema: { type: string }
+      example: PO-0004101
+    GrNumber:
+      name: gr_number
+      in: path
+      required: true
+      schema: { type: string }
+      example: RCT-0007201
+
+  requestBodies:
+    InvoiceFile:
+      required: true
+      content:
+        multipart/form-data:
+          schema:
+            type: object
+            required: [file]
+            properties:
+              file: { type: string, format: binary, description: 'pdf, png, jpg, jpeg, tif or tiff, up to 10 MB' }
+    InvoiceWebhook:
+      required: true
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/WebhookEnvelope'
+              - type: object
+                properties:
+                  data:
+                    allOf:
+                      - $ref: '#/components/schemas/Invoice'
+                      - type: object
+                        properties:
+                          document_url: { type: string, nullable: true, description: Signed link valid for one hour }
+                          action: { type: string, description: Present when a decision was sent }
+                          note: { type: string }
+    GoodsReceiptWebhook:
+      required: true
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/WebhookEnvelope'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/GoodsReceipt' }
+
+  responses:
+    BadRequest:
+      description: Missing or invalid field, or the body is not JSON
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: Missing X-API-Key header, invalid or expired key, or sign-in required
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: The credential is not allowed to make this change
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Not found, or it belongs to another user
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: Duplicate record
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ServerError:
+      description: Server or database error
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unavailable:
+      description: The service is unavailable right now
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    InvoiceDetail:
+      description: The invoice with line items, action history, vendor flag and threshold
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/Invoice'
+              - type: object
+                properties:
+                  line_items: { type: array, items: { $ref: '#/components/schemas/InvoiceLine' } }
+                  actions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        action_type: { type: string }
+                        note: { type: string, nullable: true }
+                        actioned_at: { type: string, format: date-time }
+                  vendor_flag:
+                    type: object
+                    nullable: true
+                    properties:
+                      id: { type: string, format: uuid }
+                      status: { type: string }
+                      flag_type: { type: string }
+                  threshold_pct: { type: number }
+    InvoiceFileStored:
+      description: File stored
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              invoice_number: { type: string }
+              document_name: { type: string }
+    SignedLink:
+      description: Signed download link
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              document_name: { type: string }
+              url: { type: string, format: uri }
+              expires_in: { type: integer, example: 3600 }
+    FileBytes:
+      description: 'The file, with a Content-Disposition: attachment header'
+      content:
+        application/octet-stream:
+          schema: { type: string, format: binary }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+    Mode:
+      type: string
+      enum: [easy, medium, hard]
+    Session:
+      type: object
+      properties:
+        token: { type: string }
+        expires_at: { type: integer, description: Unix time in seconds }
+        username: { type: string }
+    ApiKey:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        api_key: { type: string }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time, nullable: true }
+        expired: { type: boolean }
+    Subsidiary:
+      type: string
+      enum: [A, B, C]
+    InvoiceStatus:
+      type: string
+      enum: [pending, approved, escalated, contacted]
+    InvoiceAction:
+      type: string
+      enum: [approve, contact_vendor, escalate]
+      description: approve sets approved, contact_vendor sets contacted, escalate sets escalated
+    MatchStatus:
+      type: string
+      enum: [mismatch, partial_match]
+    MismatchType:
+      type: string
+      enum: [price_variance, qty_mismatch, missing_gr, ok]
+    InvoiceLineInput:
+      type: object
+      description: |
+        Table-style column names are also accepted (`Description`, `Inv qty`, `Inv price`, `PO qty`, `PO price`,
+        `GR qty`, `Mismatch`), matched ignoring case and spacing. Quantities and amounts may be numbers or text such as "₹16,500.00",
+        "1,50,000", "1.250,50", "(1,200)" or "10 pcs"; empty values and "N/A" are treated as not sent.
+        `line_number` defaults to the line's position. `Mismatch` accepts `OK`, `Price Variance`, `Qty Mismatch`, `Missing GR` and close spellings such as `Quantity mismatch` or `No GR`.
+      properties:
+        line_number: { type: integer, description: Defaults to the position in the list, starting at 1 }
+        description: { type: string }
+        invoice_qty: { oneOf: [{ type: number }, { type: string, example: '150' }] }
+        invoice_unit_price: { oneOf: [{ type: number }, { type: string, example: '₹16,500.00' }] }
+        po_qty: { oneOf: [{ type: number }, { type: string }] }
+        po_unit_price: { oneOf: [{ type: number }, { type: string }] }
+        gr_qty: { oneOf: [{ type: number }, { type: string }] }
+        variance_amount: { oneOf: [{ type: number }, { type: string }] }
+        mismatch_type: { $ref: '#/components/schemas/MismatchType' }
+    InvoiceLine:
+      $ref: '#/components/schemas/InvoiceLineInput'
+    InvoiceInput:
+      type: object
+      required: [invoice_number, vendor_id, vendor_name, invoice_date, po_number, total_amount, match_status]
+      properties:
+        invoice_number: { type: string, example: INV-2024-050 }
+        vendor_id: { type: string, example: VEND-001 }
+        vendor_name: { type: string }
+        vendor_email: { type: string, format: email }
+        invoice_date: { type: string, format: date }
+        po_number: { type: string }
+        gr_number: { type: string }
+        total_amount: { type: number }
+        currency: { type: string, minLength: 3, maxLength: 3, default: USD }
+        match_status: { $ref: '#/components/schemas/MatchStatus' }
+        variance_amount: { type: number, default: 0 }
+        variance_pct: { type: number, default: 0 }
+        line_items:
+          type: array
+          items: { $ref: '#/components/schemas/InvoiceLineInput' }
+    InvoicePatch:
+      type: object
+      minProperties: 1
+      description: Send only the fields that change.
+      properties:
+        invoice_number: { type: string, description: New number; must be unused }
+        vendor_id: { type: string }
+        vendor_name: { type: string }
+        po_number: { type: string }
+        invoice_date: { type: string, format: date, nullable: true }
+        gr_number: { type: string, nullable: true }
+        total_amount: { type: number }
+        variance_amount: { type: number }
+        variance_pct: { type: number }
+        currency: { type: string, minLength: 3, maxLength: 3 }
+        match_status:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/MatchStatus'
+        action: { $ref: '#/components/schemas/InvoiceAction' }
+        note: { type: string, description: Saved with the action; ignored when action is absent }
+        line_items:
+          type: array
+          description: An existing line_number is updated with the fields sent, a new one adds a line, other lines are untouched
+          items: { $ref: '#/components/schemas/InvoiceLineInput' }
+    Invoice:
+      type: object
+      properties:
+        invoice_number: { type: string }
+        vendor_id: { type: string }
+        vendor_name: { type: string }
+        invoice_date: { type: string, format: date, nullable: true }
+        po_number: { type: string }
+        gr_number: { type: string, nullable: true }
+        total_amount: { type: number }
+        currency: { type: string }
+        match_status:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/MatchStatus'
+        variance_amount: { type: number }
+        variance_pct: { type: number }
+        status: { $ref: '#/components/schemas/InvoiceStatus' }
+        document_name: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    Threshold:
+      type: object
+      properties:
+        threshold_pct: { type: number }
+        updated_at: { type: string, format: date-time }
+    PoStatus:
+      type: string
+      enum: [open, partially_received, closed, cancelled]
+    PoLine:
+      type: object
+      properties:
+        line_number: { type: integer }
+        item_code: { type: string }
+        description: { type: string }
+        quantity: { type: number }
+        unit_price: { type: number }
+        amount: { type: number, readOnly: true, description: quantity x unit_price, computed by the server }
+    PoJustification:
+      type: object
+      properties:
+        purchase_what: { type: string }
+        purchase_why: { type: string }
+        no_purchase_impact: { type: string }
+        criticality: { type: string, enum: [keep_the_lights_on, nice_to_have] }
+        alternative_tool: { type: string }
+        roi_benefit: { type: string }
+        okr_alignment: { type: string }
+    PoInput:
+      allOf:
+        - $ref: '#/components/schemas/PoJustification'
+        - type: object
+          required: [po_number]
+          properties:
+            po_number: { type: string }
+            vendor_id: { type: string }
+            vendor_name: { type: string }
+            issue_date: { type: string, format: date }
+            delivery_date: { type: string, format: date }
+            status: { $ref: '#/components/schemas/PoStatus' }
+            currency: { type: string, default: USD }
+            justification: { $ref: '#/components/schemas/PoJustification' }
+            requester_email: { type: string, format: email }
+            requester_name: { type: string }
+            vendor_email: { type: string, format: email }
+            vendor_contact_name: { type: string }
+            vendor_phone: { type: string }
+            vendor_website: { type: string }
+            vendor_address: { type: string }
+            vendor_city: { type: string }
+            vendor_country: { type: string }
+            vendor_tax_id: { type: string }
+            vendor_payment_terms: { type: string }
+            line_items:
+              type: array
+              items: { $ref: '#/components/schemas/PoLine' }
+    PurchaseOrder:
+      type: object
+      properties:
+        po_number: { type: string }
+        vendor_id: { type: string }
+        vendor_name: { type: string }
+        issue_date: { type: string, format: date }
+        delivery_date: { type: string, format: date }
+        status: { $ref: '#/components/schemas/PoStatus' }
+        currency: { type: string }
+        total_amount: { type: number }
+        document_name: { type: string, nullable: true }
+        justification: { $ref: '#/components/schemas/PoJustification' }
+        line_items:
+          type: array
+          items: { $ref: '#/components/schemas/PoLine' }
+    GrStatus:
+      type: string
+      enum: [partial, complete, rejected]
+    GrLine:
+      type: object
+      properties:
+        line_number: { type: integer }
+        item_code: { type: string }
+        description: { type: string }
+        quantity_ordered: { type: number }
+        quantity_received: { type: number }
+        unit_price: { type: number }
+        condition: { type: string, enum: [good, damaged, rejected], default: good }
+    GoodsReceiptInput:
+      type: object
+      required: [gr_number, po_number, vendor_id, vendor_name, received_date, received_by, status]
+      properties:
+        gr_number: { type: string }
+        po_number: { type: string }
+        vendor_id: { type: string }
+        vendor_name: { type: string }
+        received_date: { type: string, format: date }
+        received_by: { type: string }
+        status: { $ref: '#/components/schemas/GrStatus' }
+        line_items:
+          type: array
+          items: { $ref: '#/components/schemas/GrLine' }
+    GoodsReceipt:
+      allOf:
+        - $ref: '#/components/schemas/GoodsReceiptInput'
+    GlAccount:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        subsidiary: { $ref: '#/components/schemas/Subsidiary' }
+        account_code: { type: string }
+        account_name: { type: string }
+        account_type: { type: string, enum: [asset, liability, equity, revenue, expense] }
+        created_at: { type: string, format: date-time }
+    GlBalance:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        account_id: { type: string, format: uuid }
+        period: { type: string, example: 2024-11 }
+        gl_balance: { type: number }
+        subledger_balance: { type: number }
+        variance_amount: { type: number }
+        source_doc_ref: { type: string, nullable: true }
+        status: { type: string, enum: [matched, variance] }
+        subsidiary: { $ref: '#/components/schemas/Subsidiary' }
+        account_code: { type: string }
+        account_name: { type: string }
+        account_type: { type: string }
+    IntercompanyTransaction:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        transaction_ref: { type: string }
+        subsidiary_from: { $ref: '#/components/schemas/Subsidiary' }
+        subsidiary_to: { $ref: '#/components/schemas/Subsidiary' }
+        amount: { type: number }
+        description: { type: string }
+        posted_date_from: { type: string, format: date }
+        posted_date_to: { type: string, format: date }
+        flag_type: { type: string, enum: [matched, timing_difference, error] }
+        note: { type: string, nullable: true }
+    Accrual:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        subsidiary: { $ref: '#/components/schemas/Subsidiary' }
+        period: { type: string }
+        description: { type: string }
+        estimated_amount: { type: number }
+        actual_amount: { type: number }
+        variance_pct: { type: number }
+        tolerance_pct: { type: number }
+        blocked_by_open_ap: { type: boolean }
+        ap_reference: { type: string, nullable: true }
+        status: { type: string, enum: [within_tolerance, flagged, blocked] }
+    VendorFlag:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        vendor_id: { type: string }
+        vendor_name: { type: string }
+        invoice_number: { type: string }
+        flag_type: { type: string, enum: [bank_mismatch, duplicate_vendor, other] }
+        registered_bank_details: { type: string }
+        submitted_bank_details: { type: string }
+        severity: { type: string, enum: [low, medium, high] }
+        status: { type: string, enum: [open, cleared, escalated] }
+        created_at: { type: string, format: date-time }
+    FluxRow:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        category: { type: string, enum: [revenue, opex, cash] }
+        subsidiary: { $ref: '#/components/schemas/Subsidiary' }
+        period: { type: string, example: 2024-Q4 }
+        actual: { type: number }
+        prior_quarter: { type: number }
+        budget: { type: number }
+        variance_vs_prior_pct: { type: number }
+        variance_vs_budget_pct: { type: number }
+        explanation: { type: string, nullable: true }
+        linked_reference: { type: string, nullable: true }
+        status: { type: string, enum: [explained, unexplained] }
+    AuditEntry:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        owner_id: { type: string, format: uuid }
+        agent_name: { type: string }
+        action_checked: { type: string }
+        decision: { type: string }
+        evidence: { type: string, nullable: true }
+        escalation_reason: { type: string, nullable: true }
+        related_reference: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+    CloseState:
+      type: string
+      enum: [cleared, exception_documented, escalated]
+    CloseItem:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        owner_id: { type: string, format: uuid }
+        item_name: { type: string }
+        category: { type: string, enum: [Vendor Flag, GL Variance, Intercompany, Accrual, Flux] }
+        status: { $ref: '#/components/schemas/CloseState' }
+        owner: { type: string }
+        note: { type: string, nullable: true }
+        related_reference: { type: string, nullable: true }
+        updated_at: { type: string, format: date-time }
+    VendorStatus:
+      type: string
+      enum: [active, inactive, on_hold]
+    VendorInput:
+      type: object
+      required: [vendor_id, vendor_name]
+      description: On PATCH nothing is required and vendor_id cannot be changed.
+      properties:
+        vendor_id: { type: string }
+        vendor_name: { type: string }
+        status: { $ref: '#/components/schemas/VendorStatus' }
+        contact_name: { type: string, nullable: true }
+        email: { type: string, format: email, nullable: true }
+        phone: { type: string, nullable: true }
+        website: { type: string, nullable: true }
+        address: { type: string, nullable: true }
+        city: { type: string, nullable: true }
+        country: { type: string, nullable: true }
+        tax_id: { type: string, nullable: true }
+        payment_terms: { type: string, nullable: true }
+        currency: { type: string, default: USD }
+        notes: { type: string, nullable: true }
+        bank_name: { type: string, nullable: true, description: Payment bank }
+        bank_account_name: { type: string, nullable: true, description: Account holder }
+        bank_account_number: { type: string, nullable: true, description: 'Full account number, 4 to 34 letters or digits' }
+        routing_number: { type: string, nullable: true, description: 9-digit ABA routing number }
+        iban: { type: string, nullable: true, description: IBAN, checksum validated }
+        swift_bic: { type: string, nullable: true, description: 8 or 11 character SWIFT/BIC code }
+        ifsc_code: { type: string, nullable: true, description: 11 character IFSC code }
+    Vendor:
+      allOf:
+        - $ref: '#/components/schemas/VendorInput'
+        - type: object
+          properties:
+            id: { type: string, format: uuid }
+            shared: { type: boolean, description: 'true for the shared base vendors, false for vendors created from your own invoices and POs' }
+            created_at: { type: string, format: date-time }
+            updated_at: { type: string, format: date-time }
+    ScriptedReply:
+      type: object
+      properties:
+        subject: { type: string }
+        body: { type: string }
+    Contact:
+      type: object
+      properties:
+        email: { type: string, format: email }
+        name: { type: string }
+        role: { type: string }
+    Email:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        owner: { type: string }
+        direction: { type: string, enum: [sent, received] }
+        from_addr: { type: string }
+        to_addr: { type: string }
+        subject: { type: string }
+        body: { type: string }
+        sent_at: { type: string, format: date-time }
+        deliver_at: { type: string, format: date-time }
+        in_reply_to: { type: string, format: uuid, nullable: true }
+        is_read: { type: boolean }
+    SentEmail:
+      allOf:
+        - $ref: '#/components/schemas/Email'
+        - type: object
+          properties:
+            reply_due_at: { type: string, format: date-time, nullable: true }
+    Report:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        status: { type: string, enum: [pending, downloaded] }
+        created_at: { type: string, format: date-time }
+        downloaded_at: { type: string, format: date-time, nullable: true }
+        trigger_data: { type: object, additionalProperties: true }
+    ReportCreated:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        created: { type: boolean }
+    WebhookEnvelope:
+      type: object
+      description: Sent as POST with headers `X-Webhook-Event` and, when WEBHOOK_SECRET is set, `X-Webhook-Signature`. One attempt, 3 second timeout, no retries.
+      properties:
+        event: { type: string }
+        source: { type: string, enum: [clearledger, receiptslog, mailbox] }
+        occurred_at: { type: string, format: date-time }
+        data: { type: object, additionalProperties: true }
+    DashboardSummary:
+      type: object
+      properties:
+        mode: { $ref: '#/components/schemas/Mode' }
+        generated_at: { type: string, format: date-time }
+        period: { type: string, nullable: true }
+        balance_sheet:
+          type: object
+          properties:
+            latest_period: { type: string, nullable: true }
+            trend:
+              type: array
+              items:
+                type: object
+                properties:
+                  period: { type: string }
+                  asset: { type: number }
+                  liability: { type: number }
+                  equity: { type: number }
+                  revenue: { type: number }
+                  expense: { type: number }
+            by_subsidiary: { type: object, additionalProperties: { type: object, additionalProperties: { type: number } } }
+            variance_count: { type: integer }
+            variance_amount: { type: number }
+        intercompany:
+          type: object
+          properties:
+            by_flag: { type: object, additionalProperties: { type: integer } }
+            error_amount: { type: number }
+            timing_amount: { type: number }
+            total: { type: integer }
+        accruals:
+          type: object
+          properties:
+            by_status: { type: object, additionalProperties: { type: integer } }
+            estimated: { type: number }
+            actual: { type: number }
+            blocked_by_open_ap: { type: integer }
+        flux:
+          type: object
+          properties:
+            period: { type: string, nullable: true }
+            by_category: { type: object, additionalProperties: { type: object, additionalProperties: { type: number } } }
+            unexplained: { type: integer }
+            total: { type: integer }
+        vendor_flags:
+          type: object
+          properties:
+            by_status: { type: object, additionalProperties: { type: integer } }
+            open_high: { type: integer }
+        invoices:
+          type: object
+          properties:
+            total: { type: integer }
+            by_status: { type: object, additionalProperties: { type: integer } }
+            by_match: { type: object, additionalProperties: { type: integer } }
+            amounts:
+              type: object
+              description: Per currency; never converted or added across currencies
+              additionalProperties: { type: object, additionalProperties: { type: number } }
+            top_open:
+              type: array
+              items:
+                type: object
+                properties:
+                  invoice_number: { type: string }
+                  vendor_name: { type: string }
+                  currency: { type: string }
+                  total_amount: { type: number }
+                  match_status: { type: string, nullable: true }
+        close:
+          type: object
+          properties:
+            total: { type: integer }
+            cleared: { type: integer }
+            by_status: { type: object, additionalProperties: { type: integer } }
+            pct_complete: { type: number }
+        assignments:
+          type: object
+          properties:
+            total: { type: integer }
+            resolved: { type: integer }
+            files: { type: array, items: { type: string } }
