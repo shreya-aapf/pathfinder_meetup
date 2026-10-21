@@ -278,29 +278,42 @@ paths:
               schema:
                 type: object
                 properties:
-                  id: { type: string, format: uuid }
                   invoice_number: { type: string }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '409': { $ref: '#/components/responses/Conflict' }
     get:
       tags: [ClearLedger]
-      summary: List your invoices, newest first
+      summary: List your invoices with full details, newest first
+      description: Each invoice includes line_items, actions, vendor_flag and threshold_pct, as in the single-invoice endpoint. Filters combine with AND; ranges are inclusive.
       parameters:
         - { name: status, in: query, schema: { $ref: '#/components/schemas/InvoiceStatus' } }
         - { name: vendor_id, in: query, schema: { type: string } }
         - { name: po_number, in: query, schema: { type: string } }
         - { name: invoice_number, in: query, description: Exact match; still returns an array, empty when nothing matches, schema: { type: string } }
+        - { name: date_from, in: query, description: invoice_date on or after this day, schema: { type: string, format: date } }
+        - { name: date_to, in: query, description: invoice_date on or before this day, schema: { type: string, format: date } }
+        - { name: min_amount, in: query, description: total_amount at least this value, schema: { type: number } }
+        - { name: max_amount, in: query, description: total_amount at most this value, schema: { type: number } }
         - { $ref: '#/components/parameters/Page' }
         - { $ref: '#/components/parameters/Limit' }
       responses:
         '200':
-          description: Invoice rows without line items
+          description: Invoices with their line items, actions and vendor flag
           content:
             application/json:
               schema:
                 type: array
-                items: { $ref: '#/components/schemas/Invoice' }
+                items:
+                  allOf:
+                    - { $ref: '#/components/schemas/Invoice' }
+                    - type: object
+                      properties:
+                        line_items: { type: array, items: { $ref: '#/components/schemas/InvoiceLine' } }
+                        actions: { type: array, items: { type: object } }
+                        vendor_flag: { type: object, nullable: true }
+                        threshold_pct: { type: number }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
     patch:
       tags: [ClearLedger]
@@ -337,49 +350,46 @@ paths:
   /clearledger/api/invoices/upload:
     post:
       tags: [ClearLedger]
-      summary: Create an invoice and attach its file in one request
+      summary: Create an invoice from its header details and line items (no file)
+      description: Takes a JSON body, or form fields with no file parts (send line_items as a JSON string). Attach the invoice file afterwards with `POST /clearledger/api/invoice/document`. Fires `invoice.created`.
       requestBody:
         required: true
         content:
-          multipart/form-data:
+          application/json:
             schema:
               type: object
-              required: [invoice_number, vendor_id, vendor_name, po_number, total_amount, document]
+              required: [invoice_number, vendor_name, po_number, total_amount]
               properties:
                 invoice_number: { type: string }
-                vendor_id: { type: string }
+                vendor_id: { type: string, description: 'Optional. When omitted, the id of the vendor with the same vendor_name is used, otherwise an id such as AUTO-1A2B3C4D derived from the name' }
                 vendor_name: { type: string }
                 po_number: { type: string }
-                total_amount: { type: number }
-                invoice_date: { type: string, format: date }
+                total_amount: { oneOf: [{ type: number }, { type: string, example: '₹16,500.00' }], description: A number or text; the number is read out of it }
+                invoice_date: { type: string, description: 'YYYY-MM-DD, DD/MM/YYYY, Mar 15, 2024 or an ISO timestamp; stored as YYYY-MM-DD' }
                 gr_number: { type: string }
                 currency: { type: string, minLength: 3, maxLength: 3, default: USD }
                 vendor_email: { type: string, format: email }
-                document: { type: string, format: binary, description: 'pdf, png, jpg, jpeg, tif or tiff, up to 10 MB' }
+                match_status: { type: string, enum: [match, mismatch, partial_match] }
+                variance_amount: { oneOf: [{ type: number }, { type: string }], default: 0 }
+                variance_pct: { oneOf: [{ type: number }, { type: string }], default: 0 }
+                line_items:
+                  type: array
+                  description: Same format as POST /clearledger/api/invoices (API field names or invoice-table columns)
+                  items: { $ref: '#/components/schemas/InvoiceLine' }
       responses:
         '201':
-          description: The new invoice row
+          description: The new invoice, with its line_items
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Invoice' }
+              schema:
+                allOf:
+                  - { $ref: '#/components/schemas/Invoice' }
+                  - type: object
+                    properties:
+                      line_items: { type: array, items: { $ref: '#/components/schemas/InvoiceLine' } }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '500': { $ref: '#/components/responses/ServerError' }
-  /clearledger/api/invoices/lookup/{invoice_number}:
-    get:
-      tags: [ClearLedger]
-      summary: Find the id of an invoice by number
-      description: Legacy helper. Numbers containing slashes cannot be used here; use `GET /clearledger/api/invoice?invoice_number=`.
-      parameters:
-        - { name: invoice_number, in: path, required: true, schema: { type: string } }
-      responses:
-        '200':
-          description: Id
-          content:
-            application/json:
-              schema: { type: object, properties: { id: { type: string, format: uuid } } }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '404': { $ref: '#/components/responses/NotFound' }
   /clearledger/api/invoice:
     get:
       tags: [ClearLedger]
@@ -388,61 +398,6 @@ paths:
         - $ref: '#/components/parameters/InvoiceNumber'
       responses:
         '200': { $ref: '#/components/responses/InvoiceDetail' }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '404': { $ref: '#/components/responses/NotFound' }
-  /clearledger/api/invoices/{invoice_id}:
-    parameters:
-      - $ref: '#/components/parameters/InvoiceId'
-    get:
-      tags: [ClearLedger]
-      summary: Get one invoice by id
-      responses:
-        '200': { $ref: '#/components/responses/InvoiceDetail' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '404': { $ref: '#/components/responses/NotFound' }
-    patch:
-      tags: [ClearLedger]
-      summary: Change an invoice by id (older callers)
-      deprecated: true
-      description: Same body and response as `PATCH /clearledger/api/invoices?invoice_number=`.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/InvoicePatch' }
-      responses:
-        '200':
-          description: Updated invoice with its line items
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Invoice' }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '404': { $ref: '#/components/responses/NotFound' }
-  /clearledger/api/invoices/{invoice_id}/action:
-    patch:
-      tags: [ClearLedger]
-      summary: Record a decision by invoice id (older callers)
-      deprecated: true
-      parameters:
-        - $ref: '#/components/parameters/InvoiceId'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [action]
-              properties:
-                action: { $ref: '#/components/schemas/InvoiceAction' }
-                note: { type: string }
-      responses:
-        '200':
-          description: Updated invoice
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Invoice' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -479,36 +434,6 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/FileBytes' }
         '400': { $ref: '#/components/responses/BadRequest' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '404': { $ref: '#/components/responses/NotFound' }
-  /clearledger/api/invoices/{invoice_id}/document:
-    parameters:
-      - $ref: '#/components/parameters/InvoiceId'
-    post:
-      tags: [ClearLedger]
-      summary: Attach or replace an invoice file, by id
-      requestBody:
-        $ref: '#/components/requestBodies/InvoiceFile'
-      responses:
-        '201': { $ref: '#/components/responses/InvoiceFileStored' }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '404': { $ref: '#/components/responses/NotFound' }
-    get:
-      tags: [ClearLedger]
-      summary: Signed link to the invoice file, by id
-      responses:
-        '200': { $ref: '#/components/responses/SignedLink' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '404': { $ref: '#/components/responses/NotFound' }
-  /clearledger/api/invoices/{invoice_id}/document/download:
-    get:
-      tags: [ClearLedger]
-      summary: Download the invoice file, by id
-      parameters:
-        - $ref: '#/components/parameters/InvoiceId'
-      responses:
-        '200': { $ref: '#/components/responses/FileBytes' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
   /clearledger/api/settings/threshold:
@@ -1098,6 +1023,33 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
+  /vendors/api/vendors/search:
+    get:
+      tags: [Vendors]
+      summary: Find a vendor by PO number, vendor name, or both
+      description: At least one query parameter is required; with both, the vendor must match both. `po_number` is an exact match (ignoring case) against your own POs and invoices; `vendor_name` is a case-insensitive contains match.
+      parameters:
+        - { name: po_number, in: query, schema: { type: string }, example: PO-0004101 }
+        - { name: vendor_name, in: query, schema: { type: string }, example: Acme }
+      responses:
+        '200':
+          description: Matching vendors. `purchase_orders` is present only when po_number was sent.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count: { type: integer }
+                  vendors:
+                    type: array
+                    items:
+                      allOf:
+                        - { $ref: '#/components/schemas/Vendor' }
+                        - type: object
+                          properties:
+                            purchase_orders: { type: array, items: { type: object } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
   /vendors/api/vendors/{vendor_id}:
     parameters:
       - { name: vendor_id, in: path, required: true, schema: { type: string }, example: VEND-001 }
@@ -1155,6 +1107,7 @@ paths:
       summary: Shared contacts plus the contacts from your own invoices and POs
       security:
         - BearerAuth: []
+        - ApiKey: []
       responses:
         '200':
           description: Contacts ordered by name
@@ -1224,30 +1177,58 @@ paths:
     post:
       tags: [Mailbox]
       summary: Send an email to a contact; a scripted reply arrives about 60 seconds later
+      description: |
+        Two request shapes. With the `to` and `subject` headers, the whole request body is the email
+        text (any content type, no escaping needed); this is the safer choice for long or formatted
+        text. Without them, send a JSON object with `to`, `subject` and `body`. If the `to` header is
+        present the request is read as the header form.
+
+        `to` accepts up to 10 recipients, separated by commas (no brackets), or a JSON array in the
+        JSON form. All recipients must be known contacts, otherwise nothing is sent. Each recipient
+        gets its own sent email and scripted reply. One recipient returns a single object; several
+        (or an array) return an array of objects.
       security:
         - BearerAuth: []
+        - ApiKey: []
+      parameters:
+        - name: to
+          in: header
+          description: 'Recipient address, or up to 10 comma-separated addresses (header form only)'
+          schema: { type: string, format: email }
+        - name: subject
+          in: header
+          description: Subject, up to 200 characters (header form only). Percent-encode non-ASCII characters.
+          schema: { type: string, maxLength: 200 }
       requestBody:
         required: true
         content:
+          text/plain:
+            schema:
+              type: string
+              maxLength: 10000
+              description: The email body (header form)
           application/json:
             schema:
               type: object
               required: [to, subject, body]
               properties:
-                to: { type: string, format: email }
+                to:
+                  description: One address, a comma-separated list, or an array of up to 10 addresses
+                  oneOf:
+                    - { type: string }
+                    - { type: array, maxItems: 10, items: { type: string, format: email } }
                 subject: { type: string, maxLength: 200 }
                 body: { type: string, maxLength: 10000 }
       responses:
         '201':
-          description: The sent email and when the reply is due
+          description: The sent email and when the reply is due; an array of these for several recipients
           content:
             application/json:
               schema:
-                allOf:
-                  - $ref: '#/components/schemas/Email'
-                  - type: object
-                    properties:
-                      reply_due_at: { type: string, format: date-time, nullable: true }
+                oneOf:
+                  - $ref: '#/components/schemas/SentEmail'
+                  - type: array
+                    items: { $ref: '#/components/schemas/SentEmail' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
   /mailbox/inbox:
@@ -1257,6 +1238,7 @@ paths:
       description: Also releases replies that are due. In hard mode the "Close assignment" email is here.
       security:
         - BearerAuth: []
+        - ApiKey: []
       parameters:
         - { name: unread, in: query, schema: { type: boolean } }
       responses:
@@ -1274,6 +1256,7 @@ paths:
       summary: Sent emails, newest first, up to 200
       security:
         - BearerAuth: []
+        - ApiKey: []
       responses:
         '200':
           description: Emails
@@ -1291,6 +1274,7 @@ paths:
       summary: Get one email
       security:
         - BearerAuth: []
+        - ApiKey: []
       responses:
         '200':
           description: The email
@@ -1304,6 +1288,7 @@ paths:
       summary: Mark an email read or unread
       security:
         - BearerAuth: []
+        - ApiKey: []
       requestBody:
         required: true
         content:
@@ -1692,11 +1677,6 @@ components:
       description: Invoice number, URL-encoded. Numbers can contain slashes, so it is never put in the path.
       schema: { type: string }
       example: SSC/26-27/0388
-    InvoiceId:
-      name: invoice_id
-      in: path
-      required: true
-      schema: { type: string, format: uuid }
     PoNumber:
       name: po_number
       in: path
@@ -1799,8 +1779,6 @@ components:
                     items:
                       type: object
                       properties:
-                        id: { type: string, format: uuid }
-                        invoice_id: { type: string, format: uuid }
                         action_type: { type: string }
                         note: { type: string, nullable: true }
                         actioned_at: { type: string, format: date-time }
@@ -1819,9 +1797,8 @@ components:
           schema:
             type: object
             properties:
-              id: { type: string, format: uuid }
+              invoice_number: { type: string }
               document_name: { type: string }
-              document_path: { type: string }
     SignedLink:
       description: Signed download link
       content:
@@ -1879,24 +1856,23 @@ components:
       enum: [price_variance, qty_mismatch, missing_gr, ok]
     InvoiceLineInput:
       type: object
-      required: [line_number]
+      description: |
+        Table-style column names are also accepted (`Description`, `Inv qty`, `Inv price`, `PO qty`, `PO price`,
+        `GR qty`, `Mismatch`), matched ignoring case and spacing. Quantities and amounts may be numbers or text such as "₹16,500.00",
+        "1,50,000", "1.250,50", "(1,200)" or "10 pcs"; empty values and "N/A" are treated as not sent.
+        `line_number` defaults to the line's position. `Mismatch` accepts `OK`, `Price Variance`, `Qty Mismatch`, `Missing GR` and close spellings such as `Quantity mismatch` or `No GR`.
       properties:
-        line_number: { type: integer }
+        line_number: { type: integer, description: Defaults to the position in the list, starting at 1 }
         description: { type: string }
-        invoice_qty: { type: number }
-        invoice_unit_price: { type: number }
-        po_qty: { type: number }
-        po_unit_price: { type: number }
-        gr_qty: { type: number }
-        variance_amount: { type: number }
+        invoice_qty: { oneOf: [{ type: number }, { type: string, example: '150' }] }
+        invoice_unit_price: { oneOf: [{ type: number }, { type: string, example: '₹16,500.00' }] }
+        po_qty: { oneOf: [{ type: number }, { type: string }] }
+        po_unit_price: { oneOf: [{ type: number }, { type: string }] }
+        gr_qty: { oneOf: [{ type: number }, { type: string }] }
+        variance_amount: { oneOf: [{ type: number }, { type: string }] }
         mismatch_type: { $ref: '#/components/schemas/MismatchType' }
     InvoiceLine:
-      allOf:
-        - $ref: '#/components/schemas/InvoiceLineInput'
-        - type: object
-          properties:
-            id: { type: string, format: uuid }
-            invoice_id: { type: string, format: uuid }
+      $ref: '#/components/schemas/InvoiceLineInput'
     InvoiceInput:
       type: object
       required: [invoice_number, vendor_id, vendor_name, invoice_date, po_number, total_amount, match_status]
@@ -1944,8 +1920,6 @@ components:
     Invoice:
       type: object
       properties:
-        id: { type: string, format: uuid }
-        owner_id: { type: string, format: uuid }
         invoice_number: { type: string }
         vendor_id: { type: string }
         vendor_name: { type: string }
@@ -1962,7 +1936,6 @@ components:
         variance_pct: { type: number }
         status: { $ref: '#/components/schemas/InvoiceStatus' }
         document_name: { type: string, nullable: true }
-        document_path: { type: string, nullable: true }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
     Threshold:
@@ -2194,6 +2167,13 @@ components:
         payment_terms: { type: string, nullable: true }
         currency: { type: string, default: USD }
         notes: { type: string, nullable: true }
+        bank_name: { type: string, nullable: true, description: Payment bank }
+        bank_account_name: { type: string, nullable: true, description: Account holder }
+        bank_account_number: { type: string, nullable: true, description: 'Full account number, 4 to 34 letters or digits' }
+        routing_number: { type: string, nullable: true, description: 9-digit ABA routing number }
+        iban: { type: string, nullable: true, description: IBAN, checksum validated }
+        swift_bic: { type: string, nullable: true, description: 8 or 11 character SWIFT/BIC code }
+        ifsc_code: { type: string, nullable: true, description: 11 character IFSC code }
     Vendor:
       allOf:
         - $ref: '#/components/schemas/VendorInput'
@@ -2228,6 +2208,12 @@ components:
         deliver_at: { type: string, format: date-time }
         in_reply_to: { type: string, format: uuid, nullable: true }
         is_read: { type: boolean }
+    SentEmail:
+      allOf:
+        - $ref: '#/components/schemas/Email'
+        - type: object
+          properties:
+            reply_due_at: { type: string, format: date-time, nullable: true }
     Report:
       type: object
       properties:
